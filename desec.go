@@ -2,6 +2,7 @@ package desec
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/certmagic"
@@ -9,21 +10,14 @@ import (
 	"github.com/libdns/libdns"
 )
 
-// Ensure Provider implements interfaces
-var (
-	_ certmagic.ACMEDNSProvider = (*Provider)(nil)
-)
-
-// Provider wraps the libdns/desec provider to make it usable in Caddy.
-type Provider struct {
-	Token string `json:"token,omitempty"`
-}
-
 func init() {
 	caddy.RegisterModule(Provider{})
 }
 
-// CaddyModule returns the Caddy module information.
+type Provider struct {
+	Token string `json:"token,omitempty"`
+}
+
 func (Provider) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "dns.providers.desec",
@@ -31,36 +25,44 @@ func (Provider) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (p *Provider) getProvider() *desec.Provider {
-	return &desec.Provider{
-		Token: p.Token,
+//
+// Caddy <-> CertMagic DNS Provider Implementation
+//
+
+func (p *Provider) Acquire(ctx context.Context, fqdn, token string) error {
+	return p.Present(ctx, fqdn, token)
+}
+
+func (p *Provider) Release(ctx context.Context, fqdn, token string) error {
+	return p.CleanUp(ctx, fqdn, token)
+}
+
+//
+// libdns Provider Wrapper
+//
+
+func (p *Provider) Present(ctx context.Context, fqdn, token string) error {
+	provider := &desec.Provider{Token: p.Token}
+
+	record := libdns.TXT{
+		Name: libdns.NameFromFQDN(fqdn),
+		Text: token,
 	}
-}
 
-// Present creates a DNS TXT record to complete DNS-01 challenge.
-func (p *Provider) Present(domain, token, keyAuth string) error {
-	zone := libdns.ZoneFromFQDN("_acme-challenge." + domain)
-
-	_, err := p.getProvider().AppendRecords(context.Background(), zone, []libdns.Record{
-		{
-			Type:  "TXT",
-			Name:  "_acme-challenge",
-			Value: keyAuth,
-		},
-	})
+	_, err := provider.AppendRecords(ctx, record.Zone(), []libdns.Record{record})
 	return err
 }
 
-// CleanUp removes the DNS TXT challenge record.
-func (p *Provider) CleanUp(domain, token, keyAuth string) error {
-	zone := libdns.ZoneFromFQDN("_acme-challenge." + domain)
+func (p *Provider) CleanUp(ctx context.Context, fqdn, token string) error {
+	provider := &desec.Provider{Token: p.Token}
 
-	_, err := p.getProvider().DeleteRecords(context.Background(), zone, []libdns.Record{
-		{
-			Type:  "TXT",
-			Name:  "_acme-challenge",
-			Value: keyAuth,
-		},
-	})
+	record := libdns.TXT{
+		Name: libdns.NameFromFQDN(fqdn),
+		Text: token,
+	}
+
+	_, err := provider.DeleteRecords(ctx, record.Zone(), []libdns.Record{record})
 	return err
 }
+
+var _ certmagic.DNSProvider = (*Provider)(nil)
