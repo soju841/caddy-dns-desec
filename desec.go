@@ -1,84 +1,78 @@
 package desec
 
 import (
-	"context"
-	"strings"
-
 	"github.com/caddyserver/caddy/v2"
-	"github.com/caddyserver/certmagic"
-	desecapi "github.com/libdns/desec"
-	"github.com/libdns/libdns"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/libdns/desec"
 )
+
+// Provider lets Caddy read and manipulate DNS records hosted by this DNS provider.
+type Provider struct{ *desec.Provider }
 
 func init() {
 	caddy.RegisterModule(Provider{})
 }
 
-// Provider implements the Caddy DNS provider interface for deSEC
-type Provider struct {
-	Token string `json:"token,omitempty"`
-}
-
+// CaddyModule returns the Caddy module information.
 func (Provider) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "dns.providers.desec",
-		New: func() caddy.Module { return new(Provider) },
+		ID: "dns.providers.desec",
+		New: func() caddy.Module {
+			return &Provider{new(desec.Provider)}
+		},
 	}
 }
 
-//
-// certmagic.DNSProvider interface (Caddy uses Present/CleanUp)
-//
-
-func (p *Provider) Present(ctx context.Context, fqdn, value string) error {
-	api := &desecapi.Provider{Token: p.Token}
-
-	name, zone := splitFQDN(fqdn)
-
-	record := libdns.TXT{
-		Name: name,
-		Text: value,
-	}
-
-	_, err := api.AppendRecords(ctx, zone, []libdns.Record{record})
-	return err
+// Provision sets up the module.
+// Implements caddy.Provisioner.
+func (p *Provider) Provision(ctx caddy.Context) error {
+	// 환경변수 치환 지원 (예: {env.DESEC_TOKEN})
+	p.Provider.Token = caddy.NewReplacer().ReplaceAll(p.Provider.Token, "")
+	return nil
 }
 
-func (p *Provider) CleanUp(ctx context.Context, fqdn, value string) error {
-	api := &desecapi.Provider{Token: p.Token}
+// UnmarshalCaddyfile sets up the DNS provider from Caddyfile tokens.
+//
+// Syntax:
+//
+// desec {
+//     token <YOUR_TOKEN>
+// }
+func (p *Provider) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	for d.Next() {
+		// 블록 이름 뒤에 인자 오면 에러
+		if d.NextArg() {
+			return d.ArgErr()
+		}
 
-	name, zone := splitFQDN(fqdn)
-
-	record := libdns.TXT{
-		Name: name,
-		Text: value,
+		for nesting := d.Nesting(); d.NextBlock(nesting); {
+			switch d.Val() {
+			case "token":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				if p.Provider.Token != "" {
+					return d.Err("token already set")
+				}
+				p.Provider.Token = d.Val()
+				if d.NextArg() {
+					return d.ArgErr()
+				}
+			default:
+				return d.Errf("unrecognized subdirective '%s'", d.Val())
+			}
+		}
 	}
 
-	_, err := api.DeleteRecords(ctx, zone, []libdns.Record{record})
-	return err
+	if p.Provider.Token == "" {
+		return d.Err("missing token")
+	}
+
+	return nil
 }
 
-//
-// Helper: split FQDN into name + zone
-//
-
-func splitFQDN(fqdn string) (name, zone string) {
-	fqdn = strings.TrimSuffix(fqdn, ".")
-
-	parts := strings.Split(fqdn, ".")
-	if len(parts) < 3 {
-		return "@", fqdn
-	}
-
-	zone = strings.Join(parts[len(parts)-2:], ".")
-	name = strings.Join(parts[:len(parts)-2], ".")
-
-	if name == "" {
-		name = "@"
-	}
-
-	return name, zone
-}
-
-// interface assertion for Caddy
-var _ certmagic.DNSProvider = (*Provider)(nil)
+// Interface guards
+var (
+	_ caddyfile.Unmarshaler = (*Provider)(nil)
+	_ caddy.Provisioner     = (*Provider)(nil)
+)
